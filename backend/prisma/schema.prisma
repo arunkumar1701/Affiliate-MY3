@@ -1,0 +1,455 @@
+// Prisma Schema - Affiliate & Referral System
+// Follows PDF sections 51-58 exactly
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  AFFILIATE
+  CUSTOMER
+}
+
+enum AffiliateStatus {
+  PENDING
+  APPROVED
+  ACTIVE
+  REJECTED
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum CouponStatus {
+  ACTIVE
+  INACTIVE
+  EXPIRED
+  DEPLETED
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum CommissionBaseType {
+  ORIGINAL_VALUE
+  DISCOUNTED_VALUE
+  EXCLUDING_TAX
+  EXCLUDING_TAX_AND_SHIPPING
+}
+
+enum CommissionStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+  CANCELLED
+  REVERSED
+  ON_HOLD
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+  REJECTED
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  PAYPAL
+  STRIPE
+  WISE
+  OTHER
+}
+
+enum OrderStatus {
+  CREATED
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum FraudSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model User {
+  id            String   @id @default(uuid())
+  supabaseUid   String?  @unique
+  email         String   @unique
+  name          String?
+  passwordHash  String?
+  role          UserRole @default(CUSTOMER)
+  phone         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  affiliate     Affiliate?
+  customerOrders Order[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+model Affiliate {
+  id                    String   @id @default(uuid())
+  affiliateCode         String   @unique
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Personal Info
+  name                  String
+  email                 String   @unique
+  phone                 String?
+  country               String?
+  address               String?
+  addressCity           String?
+  addressState          String?
+  addressZip            String?
+
+  // Professional Info
+  businessName          String?
+  businessType          String?
+  website               String?
+  socialProfiles        Json?
+  audienceType          String?
+  description           String?
+  expectedReferralVolume String?
+
+  // Status
+  status                AffiliateStatus @default(PENDING)
+  createdAt             DateTime @default(now())
+  approvedAt            DateTime?
+  rejectedAt            DateTime?
+  suspendedAt           DateTime?
+  deactivatedAt         DateTime?
+  rejectionReason       String?
+  suspensionReason      String?
+
+  // Financial Config (defaults, coupons override these)
+  commissionRate        Decimal? @db.Decimal(5, 2)
+  commissionBaseType    CommissionBaseType @default(DISCOUNTED_VALUE)
+
+  // Payment Info (encrypted fields - stored as text placeholder)
+  payoutAccountHolder   String?
+  payoutBankName        String?
+  payoutAccountNumber   String?
+  payoutIban            String?
+  payoutBicSwift        String?
+  payoutMethod          PaymentMethod?
+  payoutBillingInfo     Json?
+
+  // Relations
+  coupons               AffiliateCoupon[]
+  referrals             AffiliateReferral[]
+  orders                Order[]
+  commissions           CommissionRecord[]
+  payouts               Payout[]
+  fraudFlags            FraudFlag[]
+
+  @@index([status])
+  @@index([email])
+  @@index([country])
+  @@index([affiliateCode])
+  @@map("affiliates")
+}
+
+model AffiliateCoupon {
+  id                  String   @id @default(uuid())
+  affiliateId         String
+  affiliate           Affiliate @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+
+  couponCode          String   @unique
+  couponCodeNormalized String  @unique
+
+  discountType        DiscountType @default(PERCENTAGE)
+  discountValue       Decimal  @db.Decimal(10, 2)
+
+  commissionRate      Decimal  @db.Decimal(5, 2)
+  commissionBaseType  CommissionBaseType @default(DISCOUNTED_VALUE)
+
+  minimumOrderValue   Decimal? @db.Decimal(12, 2)
+  maximumDiscount     Decimal? @db.Decimal(12, 2)
+
+  usageLimit          Int?
+  perCustomerLimit    Int?
+  usageCount          Int      @default(0)
+
+  eligibleProducts    Json?
+  excludedProducts    Json?
+  eligibleCategories  Json?
+  excludedCategories  Json?
+
+  allowStacking       Boolean  @default(false)
+
+  startAt             DateTime?
+  expiresAt           DateTime?
+  status              CouponStatus @default(ACTIVE)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  referrals           AffiliateReferral[]
+  orders              Order[]
+  commissions         CommissionRecord[]
+
+  @@index([couponCodeNormalized])
+  @@index([affiliateId])
+  @@index([status])
+  @@map("affiliate_coupons")
+}
+
+model AffiliateReferral {
+  id                String   @id @default(uuid())
+  affiliateId       String
+  affiliate         Affiliate @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  customerId        String?
+  couponId          String?
+  coupon            AffiliateCoupon? @relation(fields: [couponId], references: [id])
+  firstAttributedAt DateTime @default(now())
+  lastAttributedAt  DateTime @updatedAt
+  orderCount        Int      @default(0)
+  status            String   @default("active")
+
+  @@index([affiliateId, customerId])
+  @@map("affiliate_referrals")
+}
+
+model Order {
+  id                        String   @id @default(uuid())
+  orderNumber               String
+  customerId                String?
+  customerEmail             String?
+  customer                  User?    @relation(fields: [customerId], references: [id])
+
+  // Order financials
+  subtotal                  Decimal  @db.Decimal(14, 2)
+  taxAmount                 Decimal  @default(0) @db.Decimal(14, 2)
+  shippingAmount            Decimal  @default(0) @db.Decimal(14, 2)
+  totalAmount               Decimal  @db.Decimal(14, 2)
+  currency                  String   @default("EUR")
+
+  // Order items (JSON snapshot)
+  items                     Json?
+
+  // --- Affiliate attribution SNAPSHOT (PDF section 16, 17: HISTORICAL PROTECTION) ---
+  affiliateId               String?
+  affiliateCouponId         String?
+  affiliateCouponCode       String?
+  affiliate                 Affiliate? @relation(fields: [affiliateId], references: [id])
+  coupon                    AffiliateCoupon? @relation(fields: [affiliateCouponId], references: [id])
+
+  customerDiscountRate      Decimal? @db.Decimal(5, 2)
+  customerDiscountAmount    Decimal? @default(0) @db.Decimal(14, 2)
+
+  commissionRate            Decimal? @db.Decimal(5, 2)
+  commissionBaseType        CommissionBaseType?
+  commissionBaseAmount      Decimal? @db.Decimal(14, 2)
+  commissionAmount          Decimal? @db.Decimal(14, 2)
+
+  refundedAmount            Decimal  @default(0) @db.Decimal(14, 2)
+
+  status                    OrderStatus @default(CREATED)
+  paymentId                 String?
+  paymentProvider           String?
+  paymentSuccessAt          DateTime?
+
+  cancelledAt               DateTime?
+  refundedAt                DateTime?
+
+  // Self-referral / fraud flags
+  suspectedSelfReferral     Boolean  @default(false)
+  fraudReviewed             Boolean  @default(false)
+
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  commissions               CommissionRecord[]
+
+  @@index([affiliateId])
+  @@index([affiliateCouponId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([customerEmail])
+  @@unique([orderNumber])
+  @@map("orders")
+}
+
+model CommissionRecord {
+  id                String   @id @default(uuid())
+  idempotencyKey    String?  @unique
+  affiliateId       String
+  orderId           String
+  couponId          String?
+  couponCode        String?
+
+  orderValue        Decimal  @db.Decimal(14, 2)
+  eligibleValue     Decimal  @db.Decimal(14, 2)
+  discountAmount    Decimal  @db.Decimal(14, 2)
+  commissionBase    Decimal  @db.Decimal(14, 2)
+  commissionRate    Decimal  @db.Decimal(5, 2)
+  commissionAmount  Decimal  @db.Decimal(14, 2)
+  currency          String   @default("EUR")
+
+  status            CommissionStatus @default(PENDING)
+
+  customerRef       String?
+  notes             String?
+
+  createdAt         DateTime @default(now())
+  approvedAt        DateTime?
+  paidAt            DateTime?
+  reversedAt        DateTime?
+  rejectedAt        DateTime?
+  cancelledAt       DateTime?
+  heldAt            DateTime?
+
+  reversalAmount    Decimal  @default(0) @db.Decimal(14, 2)
+  holdReason        String?
+
+  affiliate         Affiliate @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  order             Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  coupon            AffiliateCoupon? @relation(fields: [couponId], references: [id])
+  payoutItems       PayoutItem[]
+
+  @@index([affiliateId])
+  @@index([orderId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([idempotencyKey])
+  @@map("commission_records")
+}
+
+model Payout {
+  id              String   @id @default(uuid())
+  payoutReference String   @unique
+  affiliateId     String
+  affiliate       Affiliate @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+
+  grossAmount     Decimal  @db.Decimal(14, 2)
+  adjustmentAmount Decimal @default(0) @db.Decimal(14, 2)
+  netAmount       Decimal  @db.Decimal(14, 2)
+  currency        String   @default("EUR")
+
+  paymentMethod   PaymentMethod?
+  paymentDate     DateTime?
+  paymentReference String?
+  paymentProof    String?
+
+  status          PayoutStatus @default(PENDING)
+  notes           String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  paidAt          DateTime?
+
+  items           PayoutItem[]
+
+  @@index([affiliateId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("payouts")
+}
+
+model PayoutItem {
+  id             String           @id @default(uuid())
+  payoutId       String
+  commissionId   String
+  amount         Decimal          @db.Decimal(14, 2)
+
+  payout         Payout           @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  commission     CommissionRecord @relation(fields: [commissionId], references: [id])
+
+  @@unique([payoutId, commissionId])
+  @@index([commissionId])
+  @@map("payout_items")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  actorRole   String?
+  action      String
+  entityType  String
+  entityId    String
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  userAgent   String?
+  sessionId   String?
+  createdAt   DateTime @default(now())
+
+  user        User?    @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  affiliateId String?
+  type        String
+  title       String
+  message     String
+  data        Json?
+  readAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model FraudFlag {
+  id            String   @id @default(uuid())
+  affiliateId   String?
+  orderId       String?
+  commissionId  String?
+  type          String
+  severity      FraudSeverity @default(MEDIUM)
+  description   String
+  resolved      Boolean  @default(false)
+  resolvedAt    DateTime?
+  resolvedBy    String?
+  resolution    String?
+  createdAt     DateTime @default(now())
+
+  affiliate     Affiliate? @relation(fields: [affiliateId], references: [id])
+
+  @@index([affiliateId])
+  @@index([orderId])
+  @@index([severity])
+  @@index([resolved])
+  @@map("fraud_flags")
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  type      String   @default("string")
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("system_settings")
+}
