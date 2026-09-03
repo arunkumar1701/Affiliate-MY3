@@ -38,7 +38,7 @@ export const Sidebar = () => {
   const reduced = useReducedMotion();
 
   return (
-    <aside className="sidebar-shell hidden md:flex w-64 h-screen flex-col border-r border-slate-200 bg-white sticky top-0 overflow-y-auto">
+    <aside className="sidebar-shell hidden md:flex fixed inset-y-0 left-0 z-50 w-64 h-screen flex-col border-r border-slate-200 bg-white overflow-y-auto">
       <div className="h-16 flex items-center gap-2 px-6 border-b border-slate-200">
         <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white font-bold">A</div>
         <div>
@@ -164,7 +164,7 @@ export const AppLayout = ({ children }) => {
   return (
     <div className="app-atmosphere flex min-h-screen bg-slate-50">
       <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 md:ml-64">
         <Topbar />
         <nav className="mobile-nav md:hidden" aria-label="Mobile navigation">
           {mobileNav.map(item => (
